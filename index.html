@@ -1031,7 +1031,7 @@ function renfoHTML(i) {
 function stp(i, j, f, v, step, lock) {
   const dec = step % 1 !== 0;
   const shown = f === 'r' && !v ? '' : v;
-  return `<div class="stp"><button ${lock} onclick="bumpVal(${i},${j},'${f}',-${step})">−</button><input id="${f}-${i}-${j}" type="number" inputmode="${dec ? 'decimal' : 'numeric'}" step="${step}" value="${shown}" placeholder="${f === 'r' ? '0' : ''}" ${lock} oninput="setVal(${i},${j},'${f}',this.value)"><button ${lock} onclick="bumpVal(${i},${j},'${f}',${step})">+</button></div>`;
+  return `<div class="stp"><button ${lock} onclick="bumpVal(${i},${j},'${f}',-${step})">−</button><input id="${f}-${i}-${j}" type="number" inputmode="${dec ? 'decimal' : 'numeric'}" step="${step}" value="${shown}" ${lock} oninput="setVal(${i},${j},'${f}',this.value)"><button ${lock} onclick="bumpVal(${i},${j},'${f}',${step})">+</button></div>`;
 }
 function setRowHTML(i, j) {
   const ex = W.ex[i], s = ex.sets[j], time = ex.mode === 'time', lock = ex.saved ? 'disabled' : '';
@@ -1114,7 +1114,7 @@ function fld(label, id, v, unit, handler, attrs = '') {
 function cardioHTML(i) {
   const ex = W.ex[i], c = ex.c, k = ex.kind, lock = ex.saved ? 'disabled' : '';
   const m = Math.floor(c.secs / 60), s = Math.round(c.secs % 60);
-  const time = `<div class="fld full"><span>Durée</span><div class="tt"><input id="c-m-${i}" type="number" inputmode="numeric" placeholder="0" value="${c.secs ? m : ''}" ${lock} oninput="cTime(${i})"><b>min</b><input id="c-s-${i}" type="number" inputmode="numeric" placeholder="00" value="${c.secs ? pad(s) : ''}" ${lock} oninput="cTime(${i})"><b>s</b>
+  const time = `<div class="fld full"><span>Durée</span><div class="tt"><input id="c-m-${i}" type="number" inputmode="numeric"  value="${c.secs ? m : ''}" ${lock} oninput="cTime(${i})"><b>min</b><input id="c-s-${i}" type="number" inputmode="numeric"  value="${c.secs ? pad(s) : ''}" ${lock} oninput="cTime(${i})"><b>s</b>
     ${ex.saved ? '' : `<button class="btn sm" style="margin-left:6px;white-space:nowrap" onclick="toggleCW(${i})">${CW && CW.i === i ? '⏹ <span id="cw-' + i + '">00:00</span>' : '⏱ Chrono'}</button>`}</div></div>`;
   let fields = '', extra = '';
   if (k === 'rower') {
