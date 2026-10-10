@@ -66,6 +66,14 @@ const fetchSessionsHistory = async () => ok(await db.from('sessions').select(
   'id,date,exercises(id,exercise_name,category,muscle_group,difficulty_rating,notes,sets(set_number,weight,reps,rest_time,speed,duration_minutes,incline,distance_km,is_warmup))'
 ).order('date', { ascending: false }));
 
+async function deleteSession(id) {
+  const exs = ok(await db.from('exercises').select('id').eq('session_id', id));
+  const ids = exs.map(e => e.id);
+  if (ids.length) ok(await db.from('sets').delete().in('exercise_id', ids));
+  ok(await db.from('exercises').delete().eq('session_id', id));
+  ok(await db.from('sessions').delete().eq('id', id));
+}
+
 const fetchExerciseHistory = async name => ok(await db.from('exercises').select(
   'id,exercise_name,category,difficulty_rating,notes,sessions(date),sets(set_number,reps,weight,speed,incline,duration_minutes,distance_km,is_warmup)'
 ).eq('exercise_name', name));

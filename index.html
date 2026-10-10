@@ -484,7 +484,8 @@ function exInfo(ex) {
   const { meta, text } = parseNotes(ex.notes);
   const cardio = ex.category === 'cardio';
   const kind = kindOf(ex.exercise_name, ex.category);
-  const sets = (ex.sets || []).slice().sort((a, b) => a.set_number - b.set_number);
+  const spl = Array.isArray(meta.sp) ? meta.sp : [];
+  const sets = (ex.sets || []).slice().sort((a, b) => a.set_number - b.set_number).map(s => ({ ...s, sp: spl.includes(s.set_number) }));
   const info = { name: ex.exercise_name, cardio, kind, meta, text, sets, muscle: ex.muscle_group, rpe: ex.difficulty_rating, timed: !cardio && meta.m === 'time' };
   if (cardio) {
     const s = sets[0] || {};
@@ -507,21 +508,18 @@ function exInfo(ex) {
 }
 function setLabel(s, timed) {
   const w = s.weight || 0;
-  return timed ? `${w ? nf(w) + 'kg · ' : ''}${s.reps || 0}s` : `${w ? nf(w) + 'kg' : 'PDC'}×${s.reps || 0}`;
+  return timed ? `${w ? nf(w) + 'kg · ' : ''}${s.reps || 0}s` : `${w ? (s.sp ? `2×${nf(r2(w / 2))}kg` : nf(w) + 'kg') : 'PDC'}×${s.reps || 0}`;
 }
 function cardioLine(i) {
   const p = [fmtT(i.secs)];
   if (i.kind === 'rower') {
-    if (i.distKm) p.push(`${nf(Math.round(i.distKm * 1000))} m`);
-    if (i.pace) p.push(`${fmtT(i.pace)}/500m`);
-    if (i.watts) p.push(`${i.watts} W`);
-    if (i.spm) p.push(`${i.spm} c/min`);
+    if (i.speed) p.push(`${nf(r1(i.speed))} km/h`);
     if (i.level) p.push(`rés. ${i.level}`);
   } else {
     if (i.speed) p.push(`${nf(r1(i.speed))} km/h`);
     if (i.kind === 'treadmill' && i.level) p.push(`${i.level}% pente`);
-    if (i.kind === 'bike' && i.level) p.push(`niv. ${i.level}`);
-    if (i.distKm) p.push(`${nf(r2(i.distKm))} km`);
+    if (i.kind === 'bike' && i.level) p.push(`rés. ${i.level}`);
+    if (i.kind !== 'bike' && i.distKm) p.push(`${nf(r2(i.distKm))} km`);
   }
   return p.join(' · ');
 }
@@ -737,7 +735,7 @@ function normEx(raw) {
   const meta = { ...pn.meta };
   const ex = { category: cat, name, kind, muscle: raw.muscle || (cat === 'cardio' ? 'Cardio' : ''), notes: pn.text, saved: !!raw.saved, rpe: raw.rpe || 'jaune', fresh: !!raw.fresh };
   if (cat === 'cardio') {
-    const d = { treadmill: { secs: 900, speed: 5.5, incline: 0, dist: 0 }, bike: { secs: 1200, speed: 20, damper: 5, dist: 0 }, rower: { secs: 600, dist: 2, damper: 5, spm: 22 }, cardio: { secs: 900, dist: 0 } }[kind];
+    const d = { treadmill: { secs: 0, speed: 0, incline: 0, dist: 0 }, bike: { secs: 0, speed: 0, damper: 5, dist: 0 }, rower: { secs: 0, speed: 0, damper: 5, dist: 0 }, cardio: { secs: 0, dist: 0 } }[kind];
     const c = { ...d };
     if (raw.c) Object.assign(c, raw.c);
     else {
@@ -750,12 +748,13 @@ function normEx(raw) {
       if (meta.spm) c.spm = meta.spm; if (meta.rpm) c.rpm = meta.rpm;
       if (kind === 'rower' && !c.dist && raw.speed && c.secs) c.dist = raw.speed * c.secs / 3600;
     }
+    if (kind === 'rower' && !c.speed && c.dist && c.secs) c.speed = r1(c.dist / (c.secs / 3600));
     ex.c = c;
   } else {
     ex.mode = raw.mode || (meta.m === 'time' ? 'time' : 'reps');
     ex.restTime = raw.restTime != null ? raw.restTime : 60;
-    if (Array.isArray(raw.sets)) ex.sets = raw.sets.map(s => ({ w: s.w, r: s.r, warm: !!s.warm, done: !!s.done }));
-    else if (raw.preloadedSets && raw.preloadedSets.length) ex.sets = raw.preloadedSets.map(s => ({ w: s.weight ?? 0, r: s.reps ?? 10, warm: !!s.isWarmup, done: false }));
+    if (Array.isArray(raw.sets)) ex.sets = raw.sets.map(s => ({ w: s.w, r: s.r, warm: !!s.warm, done: !!s.done, sp: !!s.sp }));
+    else if (raw.preloadedSets && raw.preloadedSets.length) ex.sets = raw.preloadedSets.map(s => ({ w: s.sp ? (s.weight ?? 0) / 2 : (s.weight ?? 0), r: s.reps ?? 0, warm: !!s.isWarmup, done: false, sp: !!s.sp }));
     else ex.sets = null;
     if (!ex.sets) ex.defaultW = raw.weight ?? 20;
   }
@@ -769,15 +768,19 @@ function serializeEx(ex) {
   } else {
     o.mode = ex.mode; o.restTime = ex.restTime;
     const sets = ex.sets || [];
-    o.sets = sets.length; o.preloadedSets = sets.map(s => ({ weight: s.w, reps: s.r, isWarmup: !!s.warm }));
+    o.sets = sets.length; o.preloadedSets = sets.map(s => ({ weight: totW(s), reps: s.r, isWarmup: !!s.warm, sp: !!s.sp }));
   }
   return o;
 }
-function metaFor(ex) {
-  if (ex.category !== 'cardio') return ex.mode === 'time' ? { m: 'time' } : {};
+const totW = s => { const w = parseFloat(s.w) || 0; return s.sp ? r2(w * 2) : w; };
+function metaFor(ex, sets) {
+  if (ex.category !== 'cardio') {
+    const m = ex.mode === 'time' ? { m: 'time' } : {};
+    const sp = (sets || []).map((s, k) => s.sp ? k + 1 : 0).filter(Boolean);
+    if (sp.length) m.sp = sp;
+    return m;
+  }
   const c = ex.c, m = { s: Math.round(c.secs || 0) };
-  if (ex.kind === 'rower' && c.spm) m.spm = c.spm;
-  if (ex.kind === 'bike' && c.rpm) m.rpm = c.rpm;
   return m;
 }
 
@@ -793,14 +796,14 @@ async function cloneAndLaunchSession(id) {
   const exs = s.exercises.map(e => {
     const i = exInfo(e);
     if (i.cardio) {
-      const c = { secs: i.secs, dist: i.distKm || 0, speed: i.speed || 0, spm: i.spm, rpm: i.rpm };
+      const c = { secs: i.secs, dist: i.distKm || 0, speed: i.speed || 0 };
       if (i.kind === 'treadmill') c.incline = i.level; else c.damper = i.level;
       return { category: 'cardio', name: i.name, muscle: i.muscle, c, notes: i.text };
     }
     return {
       category: 'renfo', name: i.name, muscle: i.muscle, mode: i.timed ? 'time' : 'reps', notes: i.text,
       restTime: (i.sets[0] && i.sets[0].rest_time) || 60,
-      preloadedSets: i.sets.map(x => ({ weight: x.weight, reps: x.reps, isWarmup: !!x.is_warmup }))
+      preloadedSets: i.sets.map(x => ({ weight: x.weight, reps: x.reps, isWarmup: !!x.is_warmup, sp: !!x.sp }))
     };
   });
   await startWorkout(exs);
@@ -820,27 +823,27 @@ async function prepareGhost(ex) {
   if (ex.category === 'cardio') {
     ex.last = inf;
     let best = null;
-    hist.forEach(h => { const i = exInfo({ exercise_name: ex.name, category: ex.category, notes: h.notes, sets: h.sets }); if (ex.kind === 'rower') { if (i.pace && (!best || i.pace < best)) best = i.pace; } else if (i.speed > (best || 0)) best = i.speed; });
+    hist.forEach(h => { const i = exInfo({ exercise_name: ex.name, category: ex.category, notes: h.notes, sets: h.sets }); if (i.speed > (best || 0)) best = i.speed; });
     ex.pr = best;
     if (ex.fresh && inf.secs) {
       ex.c.secs = inf.secs;
-      if (ex.kind === 'rower') { ex.c.dist = inf.distKm || ex.c.dist; ex.c.spm = inf.spm || ex.c.spm; ex.c.damper = inf.level || ex.c.damper; }
-      else { ex.c.speed = inf.speed || ex.c.speed; ex.c.dist = inf.distKm || 0; if (ex.kind === 'treadmill') ex.c.incline = inf.level; else { ex.c.damper = inf.level || ex.c.damper; ex.c.rpm = inf.rpm || 0; } }
+      ex.c.speed = inf.speed || ex.c.speed; ex.c.dist = inf.distKm || 0;
+      if (ex.kind === 'treadmill') ex.c.incline = inf.level; else ex.c.damper = inf.level || ex.c.damper;
     }
   } else {
-    ex.lastSets = inf.sets.map(s => ({ w: s.weight, r: s.reps, warm: !!s.is_warmup }));
+    ex.lastSets = inf.sets.map(s => ({ w: s.sp ? (s.weight || 0) / 2 : s.weight, r: s.reps, warm: !!s.is_warmup, sp: !!s.sp }));
     ex.lastTimed = inf.timed;
     if (!ex.notes && inf.text) ex.notes = inf.text;
     let maxW = 0, prE1 = 0;
     hist.forEach(h => (h.sets || []).forEach(s => { if (!s.is_warmup) { maxW = Math.max(maxW, s.weight || 0); prE1 = Math.max(prE1, (s.weight || 0) * (1 + (s.reps || 0) / 30)); } }));
     ex.pr = maxW; ex.prE1 = prE1;
-    if (ex.fresh && ex.sets === null) { ex.mode = inf.timed ? 'time' : ex.mode; ex.sets = ex.lastSets.map(s => ({ w: s.w, r: s.r, warm: s.warm, done: false })); }
+    if (ex.fresh && ex.sets === null) { ex.mode = inf.timed ? 'time' : ex.mode; ex.sets = ex.lastSets.map(s => ({ w: s.w, r: s.r, warm: s.warm, done: false, sp: !!s.sp })); }
   }
 }
 function finalizeEx(ex) {
   if (ex.category !== 'cardio' && !ex.sets) {
     const t = ex.mode === 'time';
-    ex.sets = [0, 1, 2].map(() => ({ w: t ? 0 : ex.defaultW, r: t ? 30 : 10, warm: false, done: false }));
+    ex.sets = [0, 1, 2].map(() => ({ w: t ? 0 : ex.defaultW, r: 0, warm: false, done: false, sp: false }));
   }
   delete ex.defaultW; delete ex.fresh;
 }
@@ -985,7 +988,7 @@ function renderCard(i) {
 function headHTML(i) {
   const ex = W.ex[i], n = W.ex.length;
   const rec = ex.category === 'cardio'
-    ? (ex.pr ? `Record : ${ex.kind === 'rower' ? fmtT(ex.pr) + '/500m' : nf(r1(ex.pr)) + ' km/h'}` : '')
+    ? (ex.pr ? `Record : ${nf(r1(ex.pr))} km/h` : '')
     : (ex.pr ? `Record : ${nf(ex.pr)} kg` : '');
   return `<div class="row sp" style="margin-bottom:6px">
       <div class="row" style="gap:4px"><button class="icon-btn" style="width:34px;height:30px" ${i === 0 ? 'disabled' : ''} onclick="moveCard(${i},-1)" aria-label="Avancer">◀</button>
@@ -1027,11 +1030,12 @@ function renfoHTML(i) {
 }
 function stp(i, j, f, v, step, lock) {
   const dec = step % 1 !== 0;
-  return `<div class="stp"><button ${lock} onclick="bumpVal(${i},${j},'${f}',-${step})">−</button><input id="${f}-${i}-${j}" type="number" inputmode="${dec ? 'decimal' : 'numeric'}" step="${step}" value="${v}" ${lock} oninput="setVal(${i},${j},'${f}',this.value)"><button ${lock} onclick="bumpVal(${i},${j},'${f}',${step})">+</button></div>`;
+  const shown = f === 'r' && !v ? '' : v;
+  return `<div class="stp"><button ${lock} onclick="bumpVal(${i},${j},'${f}',-${step})">−</button><input id="${f}-${i}-${j}" type="number" inputmode="${dec ? 'decimal' : 'numeric'}" step="${step}" value="${shown}" placeholder="${f === 'r' ? '0' : ''}" ${lock} oninput="setVal(${i},${j},'${f}',this.value)"><button ${lock} onclick="bumpVal(${i},${j},'${f}',${step})">+</button></div>`;
 }
 function setRowHTML(i, j) {
   const ex = W.ex[i], s = ex.sets[j], time = ex.mode === 'time', lock = ex.saved ? 'disabled' : '';
-  const ghost = ex.lastSets && ex.lastSets[j] ? `Préc. ${setLabel({ weight: ex.lastSets[j].w, reps: ex.lastSets[j].r }, ex.lastTimed)}` : '';
+  const ghost = ex.lastSets && ex.lastSets[j] ? `Préc. ${setLabel({ weight: totW(ex.lastSets[j]), reps: ex.lastSets[j].r, sp: ex.lastSets[j].sp }, ex.lastTimed)}` : '';
   return `<div class="set ${s.done ? 'done' : ''} ${time ? 'timed' : ''}" id="set-${i}-${j}">
     <div class="set-main">
       <button class="num ${s.warm ? 'warm' : ''}" ${lock} onclick="toggleWarm(${i},${j})" title="Échauffement">${s.warm ? 'W' : j + 1}</button>
@@ -1042,9 +1046,11 @@ function setRowHTML(i, j) {
     <div class="set-sub"><span>${esc(ghost)}</span>
       <span class="r"><span id="pr-${i}-${j}"></span><span id="rm-${i}-${j}"></span>
       ${time && !ex.saved ? `<button onclick="workTimer(${i},${j})" title="Chrono">▶ Chrono</button>` : ''}
+      ${!time ? `<button class="${s.sp ? 'on' : ''}" ${lock} onclick="toggleSplit(${i},${j})" title="Poids par haltère / côté">${s.sp ? '2× chaque ✓' : '2× chaque'}</button>` : ''}
       ${!time ? `<button onclick="openPlateCalc(${i},${j})" title="Disques">⚖️</button>` : ''}
       ${ex.saved ? '' : `<button class="del" onclick="delSet(${i},${j})" aria-label="Supprimer la série">✕</button>`}</span></div></div>`;
 }
+function toggleSplit(i, j) { const s = W.ex[i].sets[j]; s.sp = !s.sp; renderCard(i); persist(); }
 
 function setVal(i, j, f, v) {
   const s = W.ex[i].sets[j]; const n = parseFloat(String(v).replace(',', '.'));
@@ -1060,15 +1066,15 @@ function updInfo(i, j) {
   if (ex.mode === 'time') {
     pr.innerHTML = ''; rm.textContent = s.w ? '' : 'poids du corps'; return;
   }
-  const e1 = s.w > 0 && s.r > 0 ? s.w * (1 + s.r / 30) : 0;
-  rm.textContent = e1 ? `1RM ≈ ${Math.round(e1)} kg` : (s.w ? '' : 'poids du corps');
-  pr.innerHTML = (!s.warm && ex.prE1 && e1 > ex.prE1 + 0.01) ? '<span class="pr">⚡ PR</span>' : '';
+  const tw = totW(s);
+  rm.textContent = s.sp && tw ? `= ${nf(tw)} kg` : (s.w ? '' : 'poids du corps');
+  pr.innerHTML = (!s.warm && ex.pr && tw > ex.pr + 0.01 && s.r > 0) ? '<span class="pr">⚡ PR</span>' : '';
 }
 function toggleWarm(i, j) { const s = W.ex[i].sets[j]; s.warm = !s.warm; renderCard(i); persist(); }
 function addSet(i) {
   const ex = W.ex[i], last = ex.sets[ex.sets.length - 1];
   const gh = ex.lastSets && ex.lastSets[ex.sets.length];
-  ex.sets.push({ w: gh ? gh.w : (last ? last.w : 20), r: gh ? gh.r : (last ? last.r : (ex.mode === 'time' ? 30 : 10)), warm: false, done: false });
+  ex.sets.push({ w: gh ? gh.w : (last ? last.w : 20), r: gh ? gh.r : 0, warm: false, done: false, sp: gh ? !!gh.sp : (last ? !!last.sp : false) });
   renderCard(i); persist();
 }
 function delSet(i, j) { W.ex[i].sets.splice(j, 1); renderCard(i); persist(); }
@@ -1088,7 +1094,7 @@ function workTimer(i, j) {
 function setMode(i, m) {
   const ex = W.ex[i]; if (ex.mode === m) return;
   ex.mode = m;
-  ex.sets.forEach(s => { s.r = m === 'time' ? 30 : 10; if (m === 'time') s.w = s.w || 0; s.done = false; });
+  ex.sets.forEach(s => { s.r = 0; if (m === 'time') s.w = s.w || 0; s.done = false; });
   ex.lastSets = []; renderCard(i); persist();
 }
 function setRest(i, s) { W.ex[i].restTime = s; renderCard(i); persist(); }
@@ -1108,18 +1114,14 @@ function fld(label, id, v, unit, handler, attrs = '') {
 function cardioHTML(i) {
   const ex = W.ex[i], c = ex.c, k = ex.kind, lock = ex.saved ? 'disabled' : '';
   const m = Math.floor(c.secs / 60), s = Math.round(c.secs % 60);
-  const time = `<div class="fld full"><span>Durée</span><div class="tt"><input id="c-m-${i}" type="number" inputmode="numeric" value="${m}" ${lock} oninput="cTime(${i})"><b>min</b><input id="c-s-${i}" type="number" inputmode="numeric" value="${pad(s)}" ${lock} oninput="cTime(${i})"><b>s</b>
+  const time = `<div class="fld full"><span>Durée</span><div class="tt"><input id="c-m-${i}" type="number" inputmode="numeric" placeholder="0" value="${c.secs ? m : ''}" ${lock} oninput="cTime(${i})"><b>min</b><input id="c-s-${i}" type="number" inputmode="numeric" placeholder="00" value="${c.secs ? pad(s) : ''}" ${lock} oninput="cTime(${i})"><b>s</b>
     ${ex.saved ? '' : `<button class="btn sm" style="margin-left:6px;white-space:nowrap" onclick="toggleCW(${i})">${CW && CW.i === i ? '⏹ <span id="cw-' + i + '">00:00</span>' : '⏱ Chrono'}</button>`}</div></div>`;
   let fields = '', extra = '';
   if (k === 'rower') {
-    const p = pace500(c.secs, c.dist * 1000);
-    fields = fld('Distance', `c-distm-${i}`, c.dist ? Math.round(c.dist * 1000) : '', 'm', `cIn(${i},'distm',this.value)`, lock) +
-      fld('Allure /500 m', `c-pace-${i}`, p ? fmtT(p) : '', '/500', `cIn(${i},'pace',this.value)`, lock) +
-      fld('Cadence', `c-spm-${i}`, c.spm || '', 'c/min', `cIn(${i},'spm',this.value)`, lock) +
+    fields = fld('Vitesse', `c-speed-${i}`, c.speed || '', 'km/h', `cIn(${i},'speed',this.value)`, lock) +
       fld('Résistance', `c-damper-${i}`, c.damper || '', '1-10', `cIn(${i},'damper',this.value)`, lock);
-    extra = ex.saved ? '' : `<div class="lbl" style="margin-bottom:4px">Raccourcis distance</div><div class="hs">${[500, 1000, 2000, 5000, 10000].map(d => `<button class="chip" onclick="cPreset(${i},'distm',${d})">${nf(d)} m</button>`).join('')}</div>
-      <div class="lbl" style="margin-bottom:4px">Raccourcis durée</div><div class="hs">${[5, 10, 20, 30, 45].map(d => `<button class="chip" onclick="cPreset(${i},'min',${d})">${d} min</button>`).join('')}</div>`;
-    var readouts = `<div class="readouts"><div class="kpi"><b id="ro-w-${i}">${watts(p) || '-'}</b><span>Watts</span></div><div class="kpi"><b id="ro-s-${i}">${c.dist && c.secs ? nf(r1(c.dist / (c.secs / 3600))) : '-'}</b><span>km/h</span></div><div class="kpi"><b id="ro-d-${i}">${c.dist ? nf(r2(c.dist)) : '-'}</b><span>km</span></div></div>`;
+    extra = ex.saved ? '' : `<div class="lbl" style="margin-bottom:4px">Raccourcis durée</div><div class="hs">${[5, 10, 20, 30, 45].map(d => `<button class="chip" onclick="cPreset(${i},'min',${d})">${d} min</button>`).join('')}</div>`;
+    var readouts = '';
   } else if (k === 'treadmill') {
     fields = fld('Vitesse', `c-speed-${i}`, c.speed || '', 'km/h', `cIn(${i},'speed',this.value)`, lock) +
       fld('Pente', `c-incline-${i}`, c.incline || 0, '%', `cIn(${i},'incline',this.value)`, lock) +
@@ -1127,9 +1129,7 @@ function cardioHTML(i) {
     var readouts = `<div class="readouts"><div class="kpi"><b id="ro-p-${i}">${c.speed ? fmtT(3600 / c.speed) : '-'}</b><span>min/km</span></div></div>`;
   } else if (k === 'bike') {
     fields = fld('Vitesse', `c-speed-${i}`, c.speed || '', 'km/h', `cIn(${i},'speed',this.value)`, lock) +
-      fld('Distance', `c-dist-${i}`, c.dist ? r2(c.dist) : '', 'km', `cIn(${i},'dist',this.value)`, lock) +
-      fld('Résistance', `c-damper-${i}`, c.damper || '', 'niv.', `cIn(${i},'damper',this.value)`, lock) +
-      fld('Cadence', `c-rpm-${i}`, c.rpm || '', 'tr/min', `cIn(${i},'rpm',this.value)`, lock);
+      fld('Résistance', `c-damper-${i}`, c.damper || '', 'niv.', `cIn(${i},'damper',this.value)`, lock);
     var readouts = '';
   } else {
     fields = fld('Distance', `c-dist-${i}`, c.dist ? r2(c.dist) : '', 'km', `cIn(${i},'dist',this.value)`, lock) +
@@ -1155,15 +1155,7 @@ function cIn(i, f, raw) {
 }
 function cRecalc(i, f) {
   const ex = W.ex[i], c = ex.c, k = ex.kind;
-  if (k === 'rower') {
-    if (f === 'pace' && c.pace > 0 && c.secs > 0) { c.dist = c.secs / c.pace * 500 / 1000; setV(`c-distm-${i}`, Math.round(c.dist * 1000)); }
-    else if (f !== 'pace') { const p = pace500(c.secs, c.dist * 1000); setV(`c-pace-${i}`, p ? fmtT(p) : ''); }
-    const p = pace500(c.secs, c.dist * 1000);
-    const w = $(`ro-w-${i}`), s = $(`ro-s-${i}`), d = $(`ro-d-${i}`);
-    if (w) w.textContent = watts(p) || '-';
-    if (s) s.textContent = c.dist && c.secs ? nf(r1(c.dist / (c.secs / 3600))) : '-';
-    if (d) d.textContent = c.dist ? nf(r2(c.dist)) : '-';
-  } else {
+  {
     if (f === 'dist' && c.secs > 0) { c.speed = r1(c.dist / (c.secs / 3600)); setV(`c-speed-${i}`, c.speed || ''); }
     else if ((f === 'speed' || f === 'secs') && c.speed > 0 && c.secs > 0) { c.dist = r2(c.speed * c.secs / 3600); setV(`c-dist-${i}`, c.dist || ''); }
     const p = $(`ro-p-${i}`); if (p) p.textContent = c.speed ? fmtT(3600 / c.speed) : '-';
@@ -1200,8 +1192,8 @@ function buildPayload(i) {
     const any = ex.sets.some(s => s.done);
     const chosen = ex.sets.filter(s => any ? s.done : true);
     p.restTime = ex.restTime || 0;
-    p.dynamicSets = chosen.map((s, idx) => ({ setNumber: idx + 1, weight: parseFloat(s.w) || 0, reps: parseInt(s.r) || 0, isWarmup: !!s.warm }));
-    p.notes = buildNotes(metaFor(ex), ex.notes.trim());
+    p.dynamicSets = chosen.map((s, idx) => ({ setNumber: idx + 1, weight: totW(s), reps: parseInt(s.r) || 0, isWarmup: !!s.warm }));
+    p.notes = buildNotes(metaFor(ex, chosen), ex.notes.trim());
   }
   return p;
 }
@@ -1239,7 +1231,7 @@ function workoutTotals() {
   W.ex.forEach(e => {
     if (!e.saved) return; t.saved++;
     if (e.category === 'cardio') { t.secs += e.c.secs || 0; t.km += e.c.dist || 0; }
-    else { const w = e.sets.filter(s => !s.warm && (e.sets.some(x => x.done) ? s.done : true)); t.sets += w.length; if (e.mode !== 'time') w.forEach(s => { t.ton += s.w * s.r; t.reps += s.r; }); }
+    else { const w = e.sets.filter(s => !s.warm && (e.sets.some(x => x.done) ? s.done : true)); t.sets += w.length; if (e.mode !== 'time') w.forEach(s => { t.ton += totW(s) * s.r; t.reps += s.r; }); }
   });
   return t;
 }
@@ -1344,9 +1336,18 @@ function renderJournal() {
           <div class="row wrap" style="gap:5px">${sessChips(st)}</div></div>
         <svg class="chev" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><path d="M6 9l6 6 6-6"/></svg>
       </button>
-      <div class="sess-body" hidden>${sessDetail(s)}<button class="btn ok full" style="margin-top:10px" onclick="cloneAndLaunchSession('${esc(s.id)}')">🔁 Refaire cette séance</button></div></div>`;
+      <div class="sess-body" hidden>${sessDetail(s)}<button class="btn ok full" style="margin-top:10px" onclick="cloneAndLaunchSession('${esc(s.id)}')">🔁 Refaire cette séance</button>
+        <button class="btn danger full" style="margin-top:8px" onclick="deleteSessionUI('${esc(s.id)}')">🗑 Supprimer cette séance</button></div></div>`;
   });
   box.innerHTML = html;
+}
+async function deleteSessionUI(id) {
+  if (!await confirmBox({ title: 'Supprimer cette séance ?', msg: 'Elle sera effacée du journal avec tous ses exercices. Action définitive.', ok: 'Supprimer', danger: true })) return;
+  try {
+    await deleteSession(id);
+    cachedSessions = cachedSessions.filter(s => String(s.id) !== String(id));
+    renderJournal(); toast('Séance supprimée');
+  } catch (e) { console.error(e); toast('Échec de la suppression', true); }
 }
 function toggleSess(id) {
   const el = $('sess-' + id); if (!el) return;
@@ -1419,7 +1420,7 @@ async function renderStatsCharts() {
   if (kind === 'rower') { k1 = 'Meilleure allure'; k1v = best ? fmtT(best) + '/500' : '-'; k2 = 'Distance totale'; k2v = nf(Math.round(tot)) + ' m'; k3 = 'Séances'; k3v = rows.length; t1 = 'Allure /500 m (plus bas = mieux)'; t2 = 'Distance (m)'; u1 = 'Allure'; }
   else if (cat === 'cardio') { k1 = 'Vitesse max'; k1v = nf(r1(best)) + ' km/h'; k2 = 'Temps cumulé'; k2v = fmtDur(tot * 60); k3 = 'Séances'; k3v = rows.length; t1 = 'Vitesse max (km/h)'; t2 = 'Durée (min)'; u1 = 'km/h'; }
   else if (timed) { k1 = 'Meilleur temps'; k1v = best + ' s'; k2 = 'Temps cumulé'; k2v = fmtDur(tot); k3 = 'Séries'; k3v = sets; t1 = 'Meilleure série (s)'; t2 = 'Temps sous tension (s)'; u1 = 's'; }
-  else { k1 = 'Record charge'; k1v = nf(best) + ' kg'; k2 = 'Tonnage'; k2v = nf(Math.round(tot)) + ' kg'; k3 = 'Séries'; k3v = sets; t1 = 'Charge max (kg) & 1RM estimé'; t2 = 'Tonnage (kg)'; u1 = 'Kg'; }
+  else { k1 = 'Record charge'; k1v = nf(best) + ' kg'; k2 = 'Tonnage'; k2v = nf(Math.round(tot)) + ' kg'; k3 = 'Séries'; k3v = sets; t1 = 'Charge max (kg)'; t2 = 'Tonnage (kg)'; u1 = 'Kg'; }
   $('kpi-1-label').textContent = k1; $('kpi-1-value').textContent = k1v; $('kpi-2-label').textContent = k2; $('kpi-2-value').textContent = k2v; $('kpi-3-label').textContent = k3; $('kpi-3-value').textContent = k3v;
   $('chart1-title').textContent = t1; $('chart2-title').textContent = t2;
   // regroupement
@@ -1439,7 +1440,6 @@ async function renderStatsCharts() {
   $('chart1-subtitle').textContent = sub; $('chart2-subtitle').textContent = sub;
   const tf = kind === 'rower' ? { callback: v => fmtT(v) } : {};
   const ds1 = [{ label: u1, data: G.map(g => kind === 'rower' ? (g.perf || null) : g.perf), borderColor: '#22d3ee', backgroundColor: 'rgba(34,211,238,.14)', borderWidth: 2.5, tension: .35, fill: true, pointRadius: 4, pointBackgroundColor: '#22d3ee', spanGaps: true }];
-  if (!timed && cat !== 'cardio') ds1.push({ label: '1RM estimé', data: G.map(g => Math.round(g.e1)), borderColor: '#e879f9', borderDash: [5, 4], borderWidth: 2, tension: .35, fill: false, pointRadius: 2, pointBackgroundColor: '#e879f9' });
   if (perfChart) perfChart.destroy();
   perfChart = new Chart($('perfChart').getContext('2d'), { type: 'line', data: { labels, datasets: ds1 },
     options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { display: ds1.length > 1, labels: { boxWidth: 10 } }, tooltip: kind === 'rower' ? { callbacks: { label: c => fmtT(c.parsed.y) + '/500m' } } : {} },
