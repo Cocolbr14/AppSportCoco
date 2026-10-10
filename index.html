@@ -841,10 +841,7 @@ async function prepareGhost(ex) {
   }
 }
 function finalizeEx(ex) {
-  if (ex.category !== 'cardio' && !ex.sets) {
-    const t = ex.mode === 'time';
-    ex.sets = [0, 1, 2].map(() => ({ w: t ? 0 : ex.defaultW, r: 0, warm: false, done: false, sp: false }));
-  }
+  if (ex.category !== 'cardio' && !ex.sets) ex.sets = [];
   delete ex.defaultW; delete ex.fresh;
 }
 async function startWorkout(raws) {
